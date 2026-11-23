@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bay Tide Log</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+/* VOICE: field instrument, terse, legible in full sun.
+   IDEA: a tide staff gauge beside a field notebook.
+   PICTURE: the tide curve, predicted vs gauge, with now-line and highs/lows.
+   COLOUR and TYPE: white ground, near-black ink, bay blue prediction, signal orange gauge; Atkinson Hyperlegible.
+   LAYOUT: now-readout, chart, controls, log, map; one column on a phone. */
+:root{color-scheme:light dark;--bg:light-dark(#ffffff,#0b1418);--ink:light-dark(#0b0f12,#eef4f6);--mute:light-dark(#4a5560,#a9b7bf);
+--line:light-dark(#d5dde2,#24343c);--pred:light-dark(#0a5a86,#6cc3f0);--obs:light-dark(#d4430f,#ff8a4c);--panel:light-dark(#f2f6f8,#121e24);--hit:light-dark(#0b0f12,#eef4f6)}
+:root[data-theme=light]{color-scheme:light}:root[data-theme=dark]{color-scheme:dark}
+*{box-sizing:border-box;min-width:0}
+body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.5 "Atkinson Hyperlegible",system-ui,sans-serif;overflow-x:clip}
+.band{padding:14px max(4vw,12px)}
+h1{font-size:22px;line-height:1.1;margin:0}
+h2{font-size:19px;margin:0 0 8px}
+.top{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;justify-content:space-between}
+select,input,button,textarea{font:inherit;font-size:16px;color:var(--ink);background:var(--bg);border:2px solid var(--ink);border-radius:8px;min-height:46px;padding:6px 10px}
+button{font-weight:700;cursor:pointer}button.p{background:var(--ink);color:var(--bg)}button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid var(--obs);outline-offset:2px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.now{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+.now div{background:var(--panel);border-radius:10px;padding:8px 12px}
+.now b{display:block;font-size:clamp(28px,8vw,40px);line-height:1.1;font-variant-numeric:tabular-nums;white-space:nowrap}
+.now small,.k{color:var(--mute);font-size:14px}
+.fig{position:relative;height:clamp(260px,48vh,420px);touch-action:pan-y}
+.fig>svg{position:absolute;inset:0;width:100%;height:100%}
+#read{position:absolute;top:6px;left:8px;background:var(--bg);border:2px solid var(--ink);border-radius:8px;padding:2px 8px;font-size:15px;pointer-events:none;font-variant-numeric:tabular-nums}
+#msg{min-height:1.5em;color:var(--obs);font-weight:700}
+#map{height:320px;border-radius:10px;border:2px solid var(--line)}
+.obs{display:grid;grid-template-columns:72px minmax(0,1fr) auto;gap:10px;align-items:start;border-top:1px solid var(--line);padding:10px 0}
+.obs img{width:72px;height:72px;object-fit:cover;border-radius:6px}
+.th{width:72px;height:72px;border-radius:6px;background:var(--panel)}
+dialog{border:2px solid var(--ink);border-radius:12px;background:var(--bg);color:var(--ink);width:min(560px,96vw);padding:14px}
+dialog label{display:block;margin:8px 0 2px;font-weight:700}dialog input,dialog textarea{width:100%}
+.sw{display:inline-block;width:18px;height:4px;vertical-align:middle;margin-right:4px}
+</style>
+</head>
+<body>
+<noscript><div style="padding:14px;border:3px solid currentColor;margin:10px;font-weight:700">Scripts are off in this viewer (for example the iPhone Files preview), so the app cannot run. Open this file in a web browser served over http or https.</div></noscript>
+<div class="band top">
+  <h1>Bay Tide Log</h1>
+  <select id="stn" aria-label="Station"></select>
+</div>
+<div class="band" style="padding-top:0">
+  <div class="now">
+    <div><small>Predicted now</small><b id="nP">--</b></div>
+    <div><small>Gauge latest</small><b id="nO">--</b><small id="nOt"></small></div>
+    <div><small>Next tide</small><b id="nN">--</b><small id="nNt"></small></div>
+  </div>
+  <div id="msg" role="status"></div>
+  <div class="fig" id="fig"><svg id="chart" role="img" aria-label="Tide chart"></svg><div id="read" hidden></div></div>
+  <div class="k"><span class="sw" style="background:var(--pred)"></span>Predicted &nbsp;<span class="sw" style="background:var(--obs)"></span>Gauge (observed) &nbsp;Datum: <span id="dLab"></span>. <a id="noaa" href="#" target="_blank" rel="noopener">NOAA station page</a></div>
+</div>
+<div class="band row" style="padding-top:0">
+  <button data-r="0">Today</button><button data-r="1">±1 day</button><button data-r="3">3 days</button><button data-r="7">7 days</button>
+  <input type="date" id="d0" aria-label="Start date"><input type="date" id="d1" aria-label="End date">
+  <select id="datum" aria-label="Datum"><option value="NAVD">NAVD88</option><option value="MLLW">MLLW</option><option value="MSL">MSL</option><option value="STND">Station datum</option></select>
+  <select id="unit" aria-label="Units"><option value="english">feet</option><option value="metric">metres</option></select>
+  <button id="go" class="p">Load</button>
+</div>
+<div class="band">
+  <div class="row" style="justify-content:space-between"><h2>Observations</h2><button id="add" class="p">+ Log observation</button></div>
+  <div id="list"></div>
+  <div class="row" style="margin-top:8px"><button id="xCsv">Export CSV</button><button id="xJson">Export JSON</button><button id="xZip">Export ZIP with photos</button></div>
+</div>
+<div class="band"><h2>Map</h2><div class="k">Tap the map while the log form is open to set the place.</div><div id="map"></div></div>
+<div class="band k">Key: NAVD88 = North American Vertical Datum of 1988. MLLW = Mean Lower Low Water. MSL = Mean Sea Level. Station datum = the gauge's own zero. Times are station local time (lst_ldt, standard or daylight as in effect). Data: NOAA CO-OPS (Center for Operational Oceanographic Products and Services) API. Observations stay in this browser until exported.</div>
+
+<dialog id="dlg"><form id="frm" method="dialog">
+  <h2>Log observation</h2>
+  <label for="fT">Time</label><input type="datetime-local" id="fT" required>
+  <label>Place</label>
+  <div class="row"><button type="button" id="gps">Use GPS</button><span class="k" id="fLoc">or tap the map</span></div>
+  <div class="row"><input id="fLat" inputmode="decimal" placeholder="lat" style="width:48%"><input id="fLon" inputmode="decimal" placeholder="lon" style="width:48%"></div>
+  <label for="fSp">Species / count</label><input id="fSp" placeholder="e.g. Marbled Godwit 40">
+  <label for="fN">Note</label><textarea id="fN" rows="3" placeholder="behaviour, substrate, exposed flat..."></textarea>
+  <label for="fP">Photos</label><input type="file" id="fP" accept="image/*" multiple>
+  <div class="row" style="margin-top:12px;justify-content:flex-end"><button type="button" id="cancel">Cancel</button><button class="p" id="save" type="submit">Save</button></div>
+</form></dialog>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script>
+{
+const API='https://api.tidesandcurrents.noaa.gov/api/prod/datagetter', MD='https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi';
+const APP='bay_tide_log';
+// San Francisco Bay bounding box (deg): Golden Gate to Suisun Bay, south bay to Alviso
+const BOX={s:37.35,n:38.25,w:-122.75,e:-121.75};
+const FALLBACK=[{id:'9414863',name:'Richmond',lat:37.9283,lng:-122.4000,wl:1,type:'R'},{id:'9414290',name:'San Francisco',lat:37.8063,lng:-122.4659,wl:1,type:'R'},{id:'9414750',name:'Alameda',lat:37.7717,lng:-122.3000,wl:1,type:'R'},{id:'9414523',name:'Redwood City',lat:37.5068,lng:-122.2119,wl:1,type:'R'},{id:'9415144',name:'Port Chicago',lat:38.0560,lng:-122.0395,wl:1,type:'R'}];
+const $=id=>document.getElementById(id);
+const S={stations:FALLBACK.slice(),stn:'9414863',pred:[],hilo:[],obs:[],datumUsed:'',unitLab:'ft',t0:null,t1:null,log:[],tok:0};
+const pad=n=>String(n).padStart(2,'0');
+const ymd=d=>`${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}`;
+const ymdhm=d=>`${ymd(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+const iso=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+const parseT=s=>{const [a,b]=s.split(' ');const [y,m,d]=a.split('-').map(Number);const [h,mi]=b.split(':').map(Number);return new Date(y,m-1,d,h,mi)};
+const hm=d=>d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});
+const dayhm=d=>d.toLocaleString([],{weekday:'short',hour:'numeric',minute:'2-digit'});
+const msg=t=>{$('msg').textContent=t||''};
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function get(params){
+  const q=new URLSearchParams({application:APP,time_zone:'lst_ldt',format:'json',...params});
+  const r=await fetch(`${API}?${q}`);const j=await r.json();
+  if(j.error)throw new Error(j.error.message||'NOAA error');return j;
+}
+async function datums(id,units){
+  const r=await fetch(`${MD}/stations/${id}/datums.json?units=${units}`);const j=await r.json();
+  const o={};(j.datums||[]).forEach(d=>o[d.name]=d.value);return o;
+}
+// Fetch a product in the wanted datum; if NAVD is not served, convert from MLLW with station datums; else label MLLW.
+async function inDatum(params,datum,units){
+  try{const j=await get({...params,datum,units});return {j,lab:datum==='NAVD'?'NAVD88':datum,shift:0}}
+  catch(e){
+    if(datum!=='NAVD')throw e;
+    const j=await get({...params,datum:'MLLW',units});
+    try{const d=await datums(params.station,units);
+      if(d.NAVD88!=null&&d.MLLW!=null)return {j,lab:'NAVD88 (converted from MLLW by station datums)',shift:d.MLLW-d.NAVD88};}catch(_){}
+    return {j,lab:'MLLW (NAVD88 not available here)',shift:0};
+  }
+}
+const series=(arr,shift)=>(arr||[]).map(p=>({t:parseT(p.t),v:parseFloat(p.v)+shift,type:p.type})).filter(p=>isFinite(p.v));
+
+// Cosine interpolation between highs and lows, for subordinate stations served only as hilo
+function fromHilo(h,t0,t1){
+  const out=[];for(let i=0;i<h.length-1;i++){const a=h[i],b=h[i+1];
+    for(let t=+a.t;t<+b.t;t+=6*60000){const f=(t-a.t)/(b.t-a.t);out.push({t:new Date(t),v:a.v+(b.v-a.v)*(1-Math.cos(Math.PI*f))/2})}}
+  return out.filter(p=>p.t>=t0&&p.t<=t1);
+}
+function interp(s,t){
+  if(!s.length||t<s[0].t||t>s[s.length-1].t)return null;
+  let lo=0,hi=s.length-1;while(hi-lo>1){const m=(lo+hi)>>1;(s[m].t<=t?lo=m:hi=m)}
+  const a=s[lo],b=s[hi];if(+a.t===+b.t)return a.v;
+  if(b.t-a.t>30*60000)return null; // do not bridge gauge gaps
+  return a.v+(b.v-a.v)*(t-a.t)/(b.t-a.t);
+}
+
+async function tideAt(id,t,datum,units){
+  // predicted (and observed if a gauge) heights at time t for station id
+  const b=new Date(+t-6*3600e3),e=new Date(+t+6*3600e3),P={station:id,begin_date:ymdhm(b),end_date:ymdhm(e)};
+  let pred=null,obs=null,lab='';
+  try{const r=await inDatum({...P,product:'predictions',interval:'6'},datum,units);lab=r.lab;pred=interp(series(r.j.predictions,r.shift),t)}
+  catch(_){try{const r=await inDatum({...P,product:'predictions',interval:'hilo',begin_date:ymdhm(new Date(+t-18*3600e3)),end_date:ymdhm(new Date(+t+18*3600e3))},datum,units);lab=r.lab;pred=interp(fromHilo(series(r.j.predictions,r.shift),b,e),t)}catch(_){}}
+  try{const r=await inDatum({...P,product:'water_level'},datum,units);obs=interp(series(r.j.data,r.shift),t)}catch(_){}
+  return {pred,obs,lab};
+}
+
+async function load(){
+  const tok=++S.tok, id=S.stn, datum=$('datum').value, units=$('unit').value;
+  S.unitLab=units==='english'?'ft':'m';
+  let t0=new Date($('d0').value+'T00:00'),t1=new Date($('d1').value+'T23:59');
+  if(!(t1>t0))t1=new Date(+t0+864e5-6e4);
+  if(t1-t0>31*864e5){t1=new Date(+t0+31*864e5);msg('Range capped at 31 days (NOAA limit).')}else msg('Loading...');
+  S.t0=t0;S.t1=t1;
+  const P={station:id,begin_date:ymd(t0),end_date:ymd(t1)};
+  const st=S.stations.find(s=>s.id===id)||{};
+  $('noaa').href=`https://tidesandcurrents.noaa.gov/waterlevels.html?id=${id}`;
+  let pred=[],hilo=[],obs=[],lab='',note=[];
+  try{const r=await inDatum({...P,product:'predictions',interval:'hilo'},datum,units);hilo=series(r.j.predictions,r.shift);lab=r.lab}catch(e){note.push('No tide predictions: '+e.message)}
+  try{const r=await inDatum({...P,product:'predictions',interval:'6'},datum,units);pred=series(r.j.predictions,r.shift);lab=r.lab}
+  catch(_){if(hilo.length){const r=await inDatum({station:id,begin_date:ymd(new Date(+t0-864e5)),end_date:ymd(new Date(+t1+864e5)),product:'predictions',interval:'hilo'},datum,units).catch(()=>null);pred=fromHilo(r?series(r.j.predictions,r.shift):hilo,t0,t1);note.push('Subordinate station: curve interpolated from highs and lows.')}}
+  if(st.wl!==0){try{const r=await inDatum({...P,product:'water_level'},datum,units);obs=series(r.j.data,r.shift);if(!lab)lab=r.lab}catch(e){note.push('No gauge data for this range.')}}
+  else note.push('Prediction-only station, no gauge.');
+  if(tok!==S.tok)return;
+  if(!pred.length&&!hilo.length&&!obs.length&&note.some(n=>/fetch|network|load failed/i.test(n)))note=['Cannot reach NOAA from here (offline, or this viewer blocks outside data). Observations still save.'];
+  Object.assign(S,{pred,hilo,obs,datumUsed:lab});
+  $('dLab').textContent=lab||datum;
+  if(!db)note.push('Storage unavailable: export observations before closing.');
+  msg(note.join(' '));draw();nowBox(id,datum,units,tok);
+}
+async function nowBox(id,datum,units,tok){
+  const n=new Date(),u=S.unitLab;
+  let p=interp(S.pred,n);
+  const nxt=S.hilo.find(h=>h.t>n);
+  try{const r=await inDatum({station:id,date:'today',product:'predictions',interval:'hilo'},datum,units);
+    const h=series(r.j.predictions,r.shift);const r2=await inDatum({station:id,begin_date:ymd(n),range:'48',product:'predictions',interval:'hilo'},datum,units).catch(()=>null);
+    const all=r2?series(r2.j.predictions,r2.shift):h;const nx=all.find(x=>x.t>n)||nxt;
+    if(p==null){const r3=await inDatum({station:id,date:'today',product:'predictions',interval:'6'},datum,units).catch(()=>null);p=r3?interp(series(r3.j.predictions,r3.shift),n):interp(fromHilo(all,new Date(+n-864e5),new Date(+n+864e5)),n)}
+    if(tok!==S.tok)return;
+    $('nN').textContent=nx?`${nx.type==='H'?'High':'Low'} ${nx.v.toFixed(2)}`:'--';$('nNt').textContent=nx?dayhm(nx.t)+' '+u:'';
+  }catch(_){}
+  $('nP').textContent=p==null?'--':`${p.toFixed(2)} ${u}`;
+  try{const r=await inDatum({station:id,date:'latest',product:'water_level'},datum,units);const o=series(r.j.data,r.shift).pop();
+    if(tok!==S.tok)return;$('nO').textContent=o?`${o.v.toFixed(2)} ${u}`:'--';$('nOt').textContent=o?' at '+hm(o.t):'';}
+  catch(_){$('nO').textContent='--';$('nOt').textContent=''}
+}
+
+// ---------- chart ----------
+const svg=$('chart'),fig=$('fig');let X,Y,dims;
+function draw(){
+  const W=fig.clientWidth,H=fig.clientHeight,m={l:46,r:10,t:30,b:28};dims={W,H,m};
+  const all=[...S.pred,...S.obs];
+  if(!all.length||!S.t0){svg.innerHTML=`<text x="${W/2}" y="${H/2}" text-anchor="middle" fill="currentColor">No data loaded</text>`;return}
+  let lo=Math.min(...all.map(p=>p.v)),hi=Math.max(...all.map(p=>p.v));const pd=(hi-lo)*0.12||1;lo-=pd;hi+=pd;
+  const t0=+S.t0,t1=+S.t1;
+  X=t=>m.l+(t-t0)/(t1-t0)*(W-m.l-m.r);Y=v=>m.t+(hi-v)/(hi-lo)*(H-m.t-m.b);
+  const path=s=>{let d='',pen=false,prev=null;for(const p of s){const gap=prev&&(p.t-prev.t)>30*60000;d+=(!pen||gap?'M':'L')+X(+p.t).toFixed(1)+','+Y(p.v).toFixed(1);pen=true;prev=p}return d};
+  const step=(hi-lo)>8?2:(hi-lo)>3?1:0.5;let g='';
+  for(let v=Math.ceil(lo/step)*step;v<=hi;v+=step)g+=`<line x1="${m.l}" x2="${W-m.r}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line)"/><text x="${m.l-6}" y="${Y(v)+5}" text-anchor="end" font-size="13" fill="var(--mute)">${+v.toFixed(1)}</text>`;
+  const days=(t1-t0)/864e5,hstep=days<=1.1?3:days<=3.1?12:24;
+  for(let t=new Date(t0);+t<=t1;t=new Date(+t+hstep*3600e3)){const x=X(+t);if(t.getHours()%hstep)continue;
+    g+=`<line x1="${x}" x2="${x}" y1="${m.t}" y2="${H-m.b}" stroke="var(--line)"/>`;
+    if(W>420||t.getHours()===0)g+=`<text x="${x+3}" y="${H-8}" font-size="13" fill="var(--mute)">${t.getHours()===0?t.toLocaleDateString([],{weekday:'short',day:'numeric'}):hm(t)}</text>`}
+  g+=`<text x="${m.l}" y="16" font-size="13" fill="var(--mute)">${S.unitLab}, ${esc(S.datumUsed)}</text>`;
+  g+=`<path d="${path(S.pred)}" fill="none" stroke="var(--pred)" stroke-width="3"/>`;
+  g+=`<path d="${path(S.obs)}" fill="none" stroke="var(--obs)" stroke-width="2.5"/>`;
+  S.hilo.forEach(h=>{const x=X(+h.t),y=Y(h.v),up=h.type==='H';g+=`<circle cx="${x}" cy="${y}" r="4" fill="var(--pred)"/>`;
+    if(W>380||days<=1.1)g+=`<text x="${x}" y="${up?y-9:y+19}" text-anchor="middle" font-size="13" font-weight="700" fill="var(--ink)">${h.v.toFixed(1)} ${hm(h.t)}</text>`});
+  S.log.filter(o=>+new Date(o.t)>=t0&&+new Date(o.t)<=t1&&o.stationId===S.stn&&o.tidePred!=null).forEach(o=>{g+=`<rect x="${X(+new Date(o.t))-5}" y="${Y(o.tidePred)-5}" width="10" height="10" transform="rotate(45 ${X(+new Date(o.t))} ${Y(o.tidePred)})" fill="var(--ink)"/>`});
+  const n=Date.now();if(n>=t0&&n<=t1)g+=`<line x1="${X(n)}" x2="${X(n)}" y1="${m.t}" y2="${H-m.b}" stroke="var(--ink)" stroke-width="2" stroke-dasharray="5 4"/><text x="${X(n)+4}" y="${m.t+12}" font-size="13" font-weight="700" fill="var(--ink)">now</text>`;
+  g+=`<line id="cur" y1="${m.t}" y2="${H-m.b}" stroke="var(--hit)" stroke-width="1" visibility="hidden"/>`;
+  svg.innerHTML=g;
+}
+const ro=new ResizeObserver(draw);ro.observe(fig);
+function hover(e){
+  if(!X||!S.t0)return;const r=svg.getBoundingClientRect(),x=e.clientX-r.left,{W,m}=dims;
+  if(x<m.l||x>W-m.r){$('read').hidden=true;return}
+  const t=new Date(+S.t0+(x-m.l)/(W-m.l-m.r)*(S.t1-S.t0)),p=interp(S.pred,t),o=interp(S.obs,t);
+  const c=svg.querySelector('#cur');if(c){c.setAttribute('x1',x);c.setAttribute('x2',x);c.setAttribute('visibility','visible')}
+  $('read').hidden=false;$('read').innerHTML=`${dayhm(t)} · pred <b>${p==null?'--':p.toFixed(2)}</b> · gauge <b>${o==null?'--':o.toFixed(2)}</b> ${o!=null&&p!=null?'· resid '+(o-p).toFixed(2):''} ${S.unitLab}`;
+}
+svg.addEventListener('pointermove',hover);svg.addEventListener('pointerdown',hover);
+
+// ---------- stations ----------
+async function loadStations(){
+  try{
+    const [tp,wl]=await Promise.all([fetch(`${MD}/stations.json?type=tidepredictions`).then(r=>r.json()),fetch(`${MD}/stations.json?type=waterlevels`).then(r=>r.json())]);
+    const inBox=s=>s.lat>=BOX.s&&s.lat<=BOX.n&&s.lng>=BOX.w&&s.lng<=BOX.e;
+    const wlIds=new Set((wl.stations||[]).filter(inBox).map(s=>s.id));
+    const m=new Map();
+    (tp.stations||[]).filter(inBox).forEach(s=>m.set(s.id,{id:s.id,name:s.name,lat:+s.lat,lng:+s.lng,type:s.type,wl:wlIds.has(s.id)?1:0}));
+    (wl.stations||[]).filter(inBox).forEach(s=>{if(!m.has(s.id))m.set(s.id,{id:s.id,name:s.name,lat:+s.lat,lng:+s.lng,type:'W',wl:1})});
+    if(m.size)S.stations=[...m.values()].sort((a,b)=>b.wl-a.wl||a.name.localeCompare(b.name));
+  }catch(_){msg('Station list unavailable; showing a short built-in list.')}
+  fillStations();stationMarkers();
+}
+function fillStations(){
+  $('stn').innerHTML=S.stations.map(s=>`<option value="${s.id}" ${s.id===S.stn?'selected':''}>${esc(s.name)}${s.wl?' (gauge)':''} ${s.id}</option>`).join('');
+}
+const km=(a,b,c,d)=>{const R=6371,r=Math.PI/180,x=Math.sin((c-a)*r/2)**2+Math.cos(a*r)*Math.cos(c*r)*Math.sin((d-b)*r/2)**2;return 2*R*Math.asin(Math.sqrt(x))};
+const nearest=(lat,lon)=>S.stations.map(s=>({s,d:km(lat,lon,s.lat,s.lng)})).sort((a,b)=>a.d-b.d)[0];
+
+// ---------- map ----------
+let map=null,stLayer=null,obLayer=null,pick=null;
+try{if(window.L){map=L.map('map').setView([37.85,-122.35],10);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18,attribution:'&copy; OpenStreetMap'}).addTo(map);
+  stLayer=L.layerGroup().addTo(map);obLayer=L.layerGroup().addTo(map);
+  map.on('click',e=>{if($('dlg').open){setLoc(e.latlng.lat,e.latlng.lng,'map')}else{const n=nearest(e.latlng.lat,e.latlng.lng);if(n)selectStation(n.s.id)}});
+}}catch(_){map=null}
+function stationMarkers(){if(!stLayer)return;stLayer.clearLayers();S.stations.forEach(s=>L.circleMarker([s.lat,s.lng],{radius:s.wl?8:5,color:s.id===S.stn?'#d4430f':'#0a5a86',weight:3,fillOpacity:.6}).bindTooltip(`${s.name} ${s.id}`).on('click',()=>selectStation(s.id)).addTo(stLayer))}
+function obsMarkers(){if(!obLayer)return;obLayer.clearLayers();S.log.filter(o=>o.lat!=null).forEach(o=>L.marker([o.lat,o.lon]).bindPopup(`${esc(o.species)}<br>${new Date(o.t).toLocaleString()}<br>tide ${o.tidePred==null?'--':o.tidePred.toFixed(2)} ${o.units}`).addTo(obLayer))}
+function selectStation(id){S.stn=id;$('stn').value=id;try{localStorage.setItem('stn',id)}catch(_){}stationMarkers();load()}
+
+// ---------- observations store (IndexedDB) ----------
+let db=null;
+function openDB(){return new Promise(res=>{try{const r=indexedDB.open('baytidelog',1);
+  r.onupgradeneeded=()=>{r.result.createObjectStore('obs',{keyPath:'id'});r.result.createObjectStore('photos',{keyPath:'id'})};
+  r.onsuccess=()=>res(r.result);r.onerror=()=>res(null)}catch(_){res(null)}})}
+const tx=(st,mode,fn)=>new Promise((res,rej)=>{const t=db.transaction(st,mode);const out=fn(t);t.oncomplete=()=>res(out&&out.result);t.onerror=()=>rej(t.error)});
+async function allObs(){if(!db)return S.log;return (await tx('obs','readonly',t=>t.objectStore('obs').getAll()))||[]}
+async function photo(id){if(!db)return S.mem?.[id];return tx('photos','readonly',t=>t.objectStore('photos').get(id))}
+async function refresh(){
+  S.log=(await allObs()).sort((a,b)=>b.t.localeCompare(a.t));
+  const rows=await Promise.all(S.log.map(async o=>{let th='<div class="th"></div>';
+    if(o.photos?.length){const p=await photo(o.photos[0]);if(p?.blob){th=`<img alt="" src="${URL.createObjectURL(p.blob)}">`}}
+    return `<div class="obs">${th}<div><b>${esc(o.species)||'(no species)'}</b><br><span class="k">${new Date(o.t).toLocaleString([],{dateStyle:'medium',timeStyle:'short'})} · ${esc(o.stationName)} (${o.distKm?.toFixed(1)} km)<br>
+      tide pred ${o.tidePred==null?'--':o.tidePred.toFixed(2)}, gauge ${o.tideObs==null?'--':o.tideObs.toFixed(2)} ${o.units} ${esc(o.datum)} · ${o.photos?.length||0} photo(s)</span><br>${esc(o.note)}</div>
+      <button data-del="${o.id}" aria-label="Delete">✕</button></div>`}));
+  $('list').innerHTML=rows.join('')||'<p class="k">No observations yet.</p>';
+  obsMarkers();draw();
+}
+$('list').addEventListener('click',async e=>{const id=e.target.dataset?.del;if(!id)return;
+  if(e.target.dataset.armed!=='1'){e.target.dataset.armed='1';e.target.textContent='Delete?';setTimeout(()=>{e.target.dataset.armed='';e.target.textContent='✕'},3000);return}
+  const o=S.log.find(x=>x.id===id);
+  if(db)await tx(['obs','photos'],'readwrite',t=>{t.objectStore('obs').delete(id);(o?.photos||[]).forEach(p=>t.objectStore('photos').delete(p))});else S.log=S.log.filter(x=>x.id!==id);
+  refresh()});
+
+// ---------- log form ----------
+const dlg=$('dlg');
+function setLoc(lat,lon,src){$('fLat').value=lat.toFixed(6);$('fLon').value=lon.toFixed(6);$('fLoc').textContent='from '+src;
+  if(map){if(pick)pick.remove();pick=L.circleMarker([lat,lon],{radius:10,color:'#d4430f',weight:4}).addTo(map)}}
+$('add').onclick=()=>{const n=new Date();n.setSeconds(0,0);$('fT').value=`${iso(n)}T${pad(n.getHours())}:${pad(n.getMinutes())}`;
+  ['fLat','fLon','fSp','fN','fP'].forEach(i=>$(i).value='');$('fLoc').textContent='or tap the map';dlg.show?dlg.show():dlg.setAttribute('open','');dlg.scrollIntoView({block:'center'})};
+$('cancel').onclick=()=>dlg.close();
+$('gps').onclick=()=>{if(!navigator.geolocation||!window.isSecureContext){$('fLoc').textContent='GPS needs an https page; tap the map or type lat/lon';return}
+  $('fLoc').textContent='locating...';navigator.geolocation.getCurrentPosition(p=>setLoc(p.coords.latitude,p.coords.longitude,'GPS ±'+Math.round(p.coords.accuracy)+' m'),err=>{$('fLoc').textContent='GPS refused: '+err.message},{enableHighAccuracy:true,timeout:15000})};
+$('frm').addEventListener('submit',async e=>{e.preventDefault();$('save').disabled=true;$('save').textContent='Saving...';
+  try{
+    const t=new Date($('fT').value),lat=parseFloat($('fLat').value),lon=parseFloat($('fLon').value),has=isFinite(lat)&&isFinite(lon);
+    const near=has?nearest(lat,lon):{s:S.stations.find(s=>s.id===S.stn),d:null};
+    const datum=$('datum').value,units=$('unit').value;
+    const tide=await tideAt(near.s.id,t,datum,units);
+    const id='o'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+    const files=[...$('fP').files],pids=files.map((f,i)=>`${id}_p${i+1}`);
+    const o={id,t:t.toISOString(),tLocal:$('fT').value,lat:has?lat:null,lon:has?lon:null,locSource:$('fLoc').textContent,species:$('fSp').value.trim(),note:$('fN').value.trim(),
+      stationId:near.s.id,stationName:near.s.name,distKm:near.d,tidePred:tide.pred,tideObs:tide.obs,datum:tide.lab||datum,units:units==='english'?'ft':'m',photos:pids,photoNames:files.map(f=>f.name)};
+    if(db)await tx(['obs','photos'],'readwrite',tr=>{tr.objectStore('obs').put(o);files.forEach((f,i)=>tr.objectStore('photos').put({id:pids[i],obsId:id,name:f.name,type:f.type,blob:f}))});
+    else{S.log.push(o);S.mem=S.mem||{};files.forEach((f,i)=>S.mem[pids[i]]={name:f.name,type:f.type,blob:f});msg('Storage unavailable: this observation lasts only until the page closes. Export it.')}
+    dlg.close();if(pick){pick.remove();pick=null}refresh();
+  }catch(err){$('fLoc').textContent='Save failed: '+err.message}
+  $('save').disabled=false;$('save').textContent='Save'});
+
+// ---------- export ----------
+const COLS=['id','tLocal','t','lat','lon','locSource','species','note','stationId','stationName','distKm','tidePred','tideObs','units','datum','photoNames'];
+const csv=()=>[COLS.join(',')].concat(S.log.map(o=>COLS.map(c=>{let v=o[c];if(Array.isArray(v))v=v.join(';');if(typeof v==='number')v=+v.toFixed(c==='lat'||c==='lon'?6:3);v=v==null?'':String(v);return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v}).join(','))).join('\n');
+let dl=null;
+async function save(name,blob){
+  if(dl){try{await dl.save({filename:name,data:blob});return}catch(e){msg('Download declined or failed: '+(e.message||e));return}}
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},2000);
+}
+const stamp=()=>new Date().toISOString().slice(0,16).replace(/[:T]/g,'');
+$('xCsv').onclick=()=>save(`tidelog_${stamp()}.csv`,new Blob([csv()],{type:'text/csv'}));
+$('xJson').onclick=()=>save(`tidelog_${stamp()}.json`,new Blob([JSON.stringify(S.log,null,1)],{type:'application/json'}));
+$('xZip').onclick=async()=>{if(!window.JSZip){msg('Zip library did not load.');return}msg('Building zip...');
+  const z=new JSZip();z.file('observations.csv',csv());z.file('observations.json',JSON.stringify(S.log,null,1));
+  for(const o of S.log)for(let i=0;i<(o.photos||[]).length;i++){const p=await photo(o.photos[i]);if(p?.blob){const ext=(p.name.split('.').pop()||'jpg').toLowerCase();z.file(`photos/${o.photos[i]}.${ext}`,p.blob)}}
+  save(`tidelog_${stamp()}.zip`,await z.generateAsync({type:'blob'}));msg('')};
+
+// ---------- wire up ----------
+function setRange(days){const n=new Date(),a=new Date(n),b=new Date(n);if(days===1){a.setDate(a.getDate()-1);b.setDate(b.getDate()+1)}else if(days>1){b.setDate(b.getDate()+days-1)}
+  $('d0').value=iso(a);$('d1').value=iso(b);load()}
+document.querySelectorAll('[data-r]').forEach(b=>b.onclick=()=>setRange(+b.dataset.r));
+$('go').onclick=load;$('stn').onchange=e=>selectStation(e.target.value);
+['datum','unit'].forEach(i=>$(i).onchange=()=>{try{localStorage.setItem(i,$(i).value)}catch(_){}load()});
+try{S.stn=localStorage.getItem('stn')||S.stn;['datum','unit'].forEach(i=>{const v=localStorage.getItem(i);if(v)$(i).value=v})}catch(_){}
+const n0=new Date();$('d0').value=iso(n0);$('d1').value=iso(n0);
+fillStations();stationMarkers();
+(async()=>{db=await openDB();if(!db)msg('Browser storage unavailable here: observations last only until the page closes. Export before closing.');refresh();load();loadStations()})();
+if(window.claude?.use)window.claude.use('downloads').then(d=>{dl=d}).catch(()=>{});
+}
+</script>
+</body>
+</html>
