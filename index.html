@@ -333,6 +333,32 @@ const n0=new Date();$('d0').value=iso(n0);$('d1').value=iso(n0);
 fillStations();stationMarkers();
 (async()=>{db=await openDB();if(!db)msg('Browser storage unavailable here: observations last only until the page closes. Export before closing.');refresh();load();loadStations()})();
 if(window.claude?.use)window.claude.use('downloads').then(d=>{dl=d}).catch(()=>{});
+
+// ---------- auto-reload when a new version is pushed ----------
+// Polls this page's ETag / Last-Modified (GitHub Pages changes them on every deploy).
+// Never reloads mid-entry: waits for the observation dialog to close, and if browser
+// storage is unavailable (observations live only in memory) it asks instead of reloading.
+(()=>{
+  if(!/^https?:$/.test(location.protocol))return;
+  let base=null,pending=false;
+  const sig=async()=>{try{const r=await fetch(location.pathname,{method:'HEAD',cache:'no-store'});
+    return r.ok?(r.headers.get('etag')||r.headers.get('last-modified')):null}catch(_){return null}};
+  const apply=()=>{if(!pending||$('dlg').open)return;
+    if(!db){msg('A new version of this page was published. Export your observations, then reload.');return}
+    location.reload()};
+  const check=async()=>{if(document.hidden||pending)return;const s=await sig();if(!s)return;
+    if(base===null)base=s;else if(s!==base){pending=true;apply()}};
+  $('dlg').addEventListener('close',apply);
+  document.addEventListener('visibilitychange',check);
+  check();setInterval(check,60000);
+  // Offline support (sw.js). A changed sw.js taking over is also treated as a new version;
+  // the first install (no previous controller) is not.
+  if('serviceWorker' in navigator){
+    const had=!!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener('controllerchange',()=>{if(had){pending=true;apply()}});
+    navigator.serviceWorker.register('./sw.js').then(r=>{try{r.update()}catch(_){}}).catch(()=>{});
+  }
+})();
 }
 </script>
 </body>
